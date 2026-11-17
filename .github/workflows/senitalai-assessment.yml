@@ -4,6 +4,9 @@ on:
   push:
     branches:
       - senitalai-assessment-2026-11-17
+  pull_request:
+    branches:
+      - main
 
 permissions:
   contents: read

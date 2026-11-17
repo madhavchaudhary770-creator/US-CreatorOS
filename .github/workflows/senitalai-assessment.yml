@@ -1,0 +1,101 @@
+name: SenitalAI assessment of US-CreatorOS
+
+on:
+  push:
+    branches:
+      - senitalai-assessment-2026-11-17
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  local-source-audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout US-CreatorOS target
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          path: target
+
+      - name: Checkout SenitalAI scanner
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          repository: madhavchaudhary770-creator/SenitalAI
+          ref: main
+          path: senitalai
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: "3.12"
+
+      - name: Install SenitalAI runtime and Semgrep
+        run: |
+          python -m pip install --disable-pip-version-check -r senitalai/requirements.txt
+          python -m pip install --disable-pip-version-check semgrep==1.185.0
+
+      - name: Create ephemeral owner-approved local-source scope
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          scope = {
+              "owner": "US-CreatorOS repository owner",
+              "authorization": {
+                  "approved": True,
+                  "approved_by": "Repository owner, explicitly authorized in ChatGPT conversation on 2026-11-17",
+                  "evidence_url": "https://github.com/madhavchaudhary770-creator/US-CreatorOS",
+                  "expires_on": "2027-11-17"
+              },
+              "authorized_domains": ["github.com"],
+              "authorized_source_paths": [str(Path("target").resolve())],
+              "authorized_cloud_providers": []
+          }
+          Path("scope.json").write_text(json.dumps(scope), encoding="utf-8")
+          PY
+
+      - name: Run SenitalAI local code-audit against US-CreatorOS
+        env:
+          PYTHONPATH: senitalai
+        run: |
+          mkdir -p reports
+          python -m sentinel.cli code-audit --path "$GITHUB_WORKSPACE/target" --scope scope.json --confirm-authorized --output-dir reports
+
+      - name: Create sanitized result summary
+        if: always()
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          out = {"scanner": "SenitalAI", "target": "madhavchaudhary770-creator/US-CreatorOS", "mode": "local static source audit", "raw_evidence_uploaded": False, "tools": {}, "semgrep_rule_counts": {}}
+          summaries = sorted(Path("reports").glob("code-audit-target-*.json"))
+          if summaries:
+              data = json.loads(summaries[-1].read_text(encoding="utf-8"))
+              out["generated_at"] = data.get("generated_at")
+              for name, result in data.get("tools", {}).items():
+                  out["tools"][name] = {k: result.get(k) for k in ("installed", "version", "exit_code", "error") if k in result}
+          semgrep_files = sorted(Path("reports").glob("semgrep-target-*.json"))
+          if semgrep_files:
+              data = json.loads(semgrep_files[-1].read_text(encoding="utf-8"))
+              counts = {}
+              for finding in data.get("results", []):
+                  key = f'{finding.get("extra", {}).get("severity", "UNKNOWN")}:{finding.get("check_id", "unknown")}'
+                  counts[key] = counts.get(key, 0) + 1
+              out["semgrep_rule_counts"] = counts
+              out["semgrep_total_findings"] = len(data.get("results", []))
+          Path("safe-summary.json").write_text(json.dumps(out, indent=2), encoding="utf-8")
+          print(json.dumps(out, indent=2))
+          PY
+
+      - name: Upload sanitized summary only
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: senitalai-us-creatoros-summary
+          path: safe-summary.json
+          if-no-files-found: warn
+          retention-days: 7
